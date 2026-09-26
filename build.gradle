@@ -1,0 +1,117 @@
+// Copyright 2019-2020 LinkedIn Corporation. All rights reserved.
+// Licensed under the BSD-2 Clause license.
+// See LICENSE in the project root for license information.
+
+buildscript {
+  repositories {
+    jcenter()
+    maven {
+      url "https://plugins.gradle.org/m2/"
+    }
+  }
+  dependencies {
+    classpath "io.github.gradle-nexus:publish-plugin:1.1.0"
+    classpath "org.shipkit:shipkit-auto-version:1.1.1"
+    classpath "org.shipkit:shipkit-changelog:1.1.10"
+  }
+}
+
+plugins {
+  id "com.diffplug.spotless" version "6.25.0"
+}
+
+apply from: "gradle/shipkit.gradle"
+
+configurations {
+  provided
+}
+
+allprojects {
+  group = "com.linkedin.coral"
+  apply plugin: "com.diffplug.spotless"
+
+  repositories {
+    mavenCentral()
+    maven {
+      url 'https://linkedin.jfrog.io/artifactory/avro-util/'
+    }
+  }
+
+  spotless {
+    ratchetFrom 'origin/master'
+    groovyGradle {
+      target '**/*.gradle'
+      endWithNewline()
+      greclipse().configFile("${rootDir}/gradle/spotless/codestyle-eclipse.xml")
+    }
+    format 'markdown', {
+      target '**/*.md'
+      targetExclude 'docs/release-notes.md'
+      endWithNewline()
+      // Disabling Prettier since it causes TravisCI to barf
+      // prettier()
+    }
+  }
+}
+
+subprojects {
+  plugins.withType(JavaPlugin) {
+    java {
+      toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+      }
+    }
+    // Build with JDK 17 toolchain but emit Java 8 bytecode via --release 8 so Coral JARs remain
+    // loadable by JDK 8/11 consumers (no breaking change for existing users).
+    tasks.withType(JavaCompile).configureEach {
+      options.release = 8
+    }
+    dependencies {
+      testImplementation deps.'testing'
+      // Hive 2.3.9 embedded metastore requires DataNucleus and Derby
+      testRuntimeOnly deps.'derby'
+      testRuntimeOnly deps.'datanucleus-api-jdo'
+      testRuntimeOnly deps.'datanucleus-core'
+      testRuntimeOnly deps.'datanucleus-rdbms'
+      testImplementation deps.'javax-jdo'
+      // Hive 2.3.9 references DruidQuery from Calcite adapter at runtime
+      testRuntimeOnly('org.apache.calcite:calcite-druid:1.10.0') {
+        exclude group: 'org.apache.calcite', module: 'calcite-core'
+        exclude group: 'org.apache.calcite', module: 'calcite-avatica'
+      }
+    }
+    // Hive 2.3.9 transitively depends on pentaho-aggdesigner which is not in Maven Central
+    configurations.all {
+      exclude group: 'org.pentaho', module: 'pentaho-aggdesigner-algorithm'
+    }
+    test {
+      useTestNG()
+      jvmArgs = [
+        '--add-opens=java.base/java.lang=ALL-UNNAMED',
+        '--add-opens=java.base/java.lang.invoke=ALL-UNNAMED',
+        '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
+        '--add-opens=java.base/java.util=ALL-UNNAMED',
+        '--add-opens=java.base/java.io=ALL-UNNAMED',
+        '--add-opens=java.base/java.net=ALL-UNNAMED',
+        '--add-opens=java.base/java.nio=ALL-UNNAMED',
+        '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED'
+      ]
+      systemProperty 'derby.stream.error.field', 'java.lang.System.err'
+      // Hive 2.3.9 CalcitePlanner is incompatible with Calcite 1.21.0.265
+      systemProperty 'hive.cbo.enable', 'false'
+      systemProperty 'hive.exec.mode.local.auto', 'false'
+      systemProperty 'hive.metastore.disallow.incompatible.col.type.changes', 'false'
+    }
+    spotless {
+      java {
+        importOrder('java', 'javax', 'com', 'org', 'com.linkedin.coral', '\\#')
+        removeUnusedImports()
+        eclipse().configFile("${rootDir}/gradle/spotless/codestyle-eclipse.xml")
+        licenseHeaderFile file("${rootDir}/gradle/license/LICENSE_HEADER")
+      }
+    }
+  }
+
+  apply from: "${rootDir}/gradle/dependencies.gradle"
+  apply from: "${rootDir}/gradle/java-publication.gradle"
+}
